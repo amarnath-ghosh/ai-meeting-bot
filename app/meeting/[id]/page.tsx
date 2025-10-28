@@ -1,182 +1,252 @@
 'use client';
 
+// FIX: Import useParams from next/navigation
 import { useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+// FIX: Use relative path for lib import
 import { db, setupAuth } from '../../lib/firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 
-// Define types for our data
-interface Summary {
-  title: string;
-  summary: string;
-  action_items: { item: string; owner: string }[];
-  key_topics: { topic: string; sentiment: string }[];
-  participants: { speaker_label: string; sentiment: string }[];
+// This interface defines the shape of our data in Firestore
+interface TranscriptEntry {
+  speaker: string;
+  text: string;
+  timestamp: string;
 }
 
-interface Meeting {
-  id: string;
+interface SummaryData {
+  summary: string;
+  actionItems: string[];
+  keyTopics: { topic: string; description: string }[];
+  sentiment: string;
+}
+
+interface MeetingData {
   meetingUrl: string;
-  status: 'joining' | 'in-progress' | 'processing' | 'completed' | 'failed';
-  summary?: Summary;
-  transcript?: any[];
+  botName: string;
+  createdAt: string;
+  status: 'JOINING' | 'TRANSCRIBING' | 'SUMMARIZING' | 'COMPLETED' | 'ERROR';
+  transcript: TranscriptEntry[];
+  summary: SummaryData | null;
   error?: string;
 }
 
-export default function MeetingPage({ params }: { params: { id: string } }) {
-  const { id: meetingId } = params;
-  const [meeting, setMeeting] = useState<Meeting | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Authenticate the user first
-    setupAuth().then(() => {
-      if (!meetingId) return;
-
-      const meetingRef = doc(db, 'meetings', String(meetingId));
-
-      // Use onSnapshot to listen for real-time changes
-      const unsubscribe = onSnapshot(
-        meetingRef,
-        (docSnap) => {
-          if (docSnap.exists()) {
-            setMeeting(docSnap.data() as Meeting);
-          } else {
-            setMeeting(null); // Or set an error state
-          }
-          setLoading(false);
-        },
-        (error) => {
-          console.error('Error fetching meeting:', error);
-          setLoading(false);
-        }
-      );
-
-      // Clean up the listener on unmount
-      return () => unsubscribe();
-    });
-  }, [meetingId]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-        Loading meeting data...
-      </div>
-    );
+// A simple loading spinner component
+const LoadingSpinner = ({ status }: { status: string }) => {
+  let statusText = 'Loading...';
+  switch (status) {
+    case 'JOINING':
+      statusText = 'Bot is joining the meeting...';
+      break;
+    case 'TRANSCRIBING':
+      statusText = 'Live transcription in progress...';
+      break;
+    case 'SUMMARIZING':
+      statusText = 'Summarizing the meeting...';
+      break;
   }
-
-  if (!meeting) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-        Meeting not found.
-      </div>
-    );
-  }
-  
-  const getStatusMessage = (status: string) => {
-    switch (status) {
-      case 'joining':
-        return 'Bot is joining the call...';
-      case 'in-progress':
-        return 'Meeting is live. Bot is listening...';
-      case 'processing':
-        return 'Meeting has ended. Generating summary with Gemini...';
-      case 'failed':
-        return `Processing failed: ${meeting.error || 'Unknown error'}`;
-      default:
-        return 'Loading...';
-    }
-  };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-200 p-4 md:p-8">
-      <div className="max-w-4xl mx-auto">
-        {meeting.status !== 'completed' && (
-          <div className="p-4 mb-6 text-center text-cyan-200 bg-gray-800 rounded-lg shadow-lg">
-            <h2 className="text-xl font-semibold">{getStatusMessage(meeting.status)}</h2>
-          </div>
-        )}
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+      <svg
+        className="w-16 h-16 animate-spin text-cyan-500"
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <circle
+          className="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="4"
+        ></circle>
+        <path
+          className="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+        ></path>
+      </svg>
+      <p className="mt-4 text-xl text-gray-300">{statusText}</p>
+    </div>
+  );
+};
 
-        {meeting.summary ? (
-          <div className="space-y-6">
-            <h1 className="text-4xl font-bold text-center text-cyan-400">
-              {meeting.summary.title}
-            </h1>
-            
-            {/* Summary */}
-            <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-              <h2 className="text-2xl font-semibold mb-3 text-cyan-300">Meeting Summary</h2>
-              <p className="text-gray-300 leading-relaxed">{meeting.summary.summary}</p>
-            </div>
+// FIX: Remove 'params' prop from the function signature
+export default function MeetingPage() {
+  // FIX: Get params using the hook
+  const params = useParams();
+  // Ensure meetingId is a string, as useParams can return string | string[]
+  const meetingId = Array.isArray(params.id) ? params.id[0] : params.id;
 
-            {/* Action Items */}
-            <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-              <h2 className="text-2xl font-semibold mb-3 text-cyan-300">Action Items</h2>
-              <ul className="list-disc list-inside space-y-2">
-                {meeting.summary.action_items.map((item, index) => (
-                  <li key={index} className="text-gray-300">
-                    <strong>{item.owner}:</strong> {item.item}
+  const [meeting, setMeeting] = useState<MeetingData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+
+  // Effect to set up Firebase auth
+  useEffect(() => {
+    // This logs in the user anonymously so we can access Firestore
+    setupAuth().catch((error) => {
+      console.error("Auth setup failed:", error);
+      // Handle auth error (e.g., show a message)
+      // This is likely the "configuration-not-found" error
+      // if you haven't enabled Anonymous Auth in Firebase
+    });
+  }, []);
+
+  // Effect to listen for real-time data from Firestore
+  useEffect(() => {
+    // Don't run until we have the ID and auth is ready
+    if (!meetingId) return;
+
+    const docRef = doc(db, 'meetings', meetingId);
+
+    // onSnapshot creates a real-time listener
+    const unsubscribe = onSnapshot(
+      docRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as MeetingData;
+          setMeeting(data);
+
+          // If the status is 'COMPLETED' or 'ERROR', we can stop the loading spinner
+          if (data.status === 'COMPLETED' || data.status === 'ERROR') {
+            setLoading(false);
+          }
+        } else {
+          // Document doesn't exist, show an error or redirect
+          console.error('No such document!');
+          setLoading(false);
+          setMeeting(null);
+        }
+      },
+      (error) => {
+        console.error('Firestore snapshot error:', error);
+        setLoading(false);
+      }
+    );
+
+    // Clean up the listener when the component unmounts
+    return () => unsubscribe();
+  }, [meetingId]); // Re-run this effect if the meetingId changes
+
+  if (loading || !meeting) {
+    return <LoadingSpinner status={meeting?.status || 'Loading...'} />;
+  }
+
+  if (meeting.status === 'ERROR') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+        <h1 className="text-3xl font-bold text-red-500">Meeting Error</h1>
+        <p className="mt-4 text-xl text-gray-300">{meeting.error}</p>
+        <button
+          onClick={() => router.push('/')}
+          className="mt-6 px-4 py-2 font-semibold text-white bg-cyan-600 rounded-md hover:bg-cyan-700"
+        >
+          Go Home
+        </button>
+      </div>
+    );
+  }
+
+  // Render the COMPLETED meeting summary
+  return (
+    <div className="min-h-screen bg-gray-900 text-gray-200">
+      <header className="bg-gray-800 shadow-lg">
+        <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+          <button
+            onClick={() => router.push('/')}
+            className="text-cyan-400 hover:text-cyan-300"
+          >
+            &larr; Back to Home
+          </button>
+          <h1 className="text-3xl font-bold text-white mt-2">
+            Meeting Summary
+          </h1>
+          <p className="text-sm text-gray-400 mt-1">
+            {meeting.meetingUrl}
+          </p>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          {/* Main content: Summary and Transcript */}
+          <div className="lg:col-span-2 space-y-8">
+            {/* Key Topics */}
+            <div className="bg-gray-800 shadow-md rounded-lg p-6">
+              <h2 className="text-2xl font-semibold text-white mb-4">
+                Key Topics
+              </h2>
+              <ul className="space-y-4">
+                {meeting.summary?.keyTopics.map((item, index) => (
+                  <li key={index}>
+                    <h3 className="text-lg font-medium text-cyan-400">
+                      {item.topic}
+                    </h3>
+                    <p className="text-gray-300">{item.description}</p>
                   </li>
                 ))}
               </ul>
             </div>
-
-            {/* Key Topics & Participants */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-                <h2 className="text-2xl font-semibold mb-3 text-cyan-300">Key Topics</h2>
-                <ul className="space-y-2">
-                  {meeting.summary.key_topics.map((topic, index) => (
-                    <li key={index} className="flex justify-between items-center text-gray-300">
-                      <span>{topic.topic}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-sm font-medium ${
-                        topic.sentiment === 'Positive' ? 'bg-green-700 text-green-200' :
-                        topic.sentiment === 'Negative' ? 'bg-red-700 text-red-200' :
-                        'bg-gray-600 text-gray-200'
-                      }`}>
-                        {topic.sentiment}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-                <h2 className="text-2xl font-semibold mb-3 text-cyan-300">Participants</h2>
-                <ul className="space-y-2">
-                  {meeting.summary.participants.map((p, index) => (
-                    <li key={index} className="flex justify-between items-center text-gray-300">
-                      <span>{p.speaker_label}</span>
-                       <span className={`px-2 py-0.5 rounded-full text-sm font-medium ${
-                        p.sentiment === 'Positive' ? 'bg-green-700 text-green-200' :
-                        p.sentiment === 'Negative' ? 'bg-red-700 text-red-200' :
-                        'bg-gray-600 text-gray-200'
-                      }`}>
-                        {p.sentiment}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
             
             {/* Full Transcript */}
-            <div className="p-6 bg-gray-800 rounded-lg shadow-lg">
-              <h2 className="text-2xl font-semibold mb-3 text-cyan-300">Full Transcript</h2>
-              <div className="max-h-96 overflow-y-auto space-y-3 pr-2">
-                {meeting.transcript?.map((chunk, index) => (
-                  <div key={index} className="text-gray-300">
-                    <span className="font-bold text-cyan-400">{chunk.speaker_label || 'Unknown'}: </span>
-                    <span>{chunk.transcript}</span>
+            <div className="bg-gray-800 shadow-md rounded-lg p-6">
+              <h2 className="text-2xl font-semibold text-white mb-4">
+                Transcript
+              </h2>
+              <div className="max-h-96 overflow-y-auto space-y-4 pr-2">
+                {meeting.transcript.map((entry, index) => (
+                  <div key={index} className="flex flex-col">
+                    <span className="font-semibold text-cyan-400">
+                      {entry.speaker}
+                    </span>
+                    <p className="text-gray-300">{entry.text}</p>
                   </div>
                 ))}
               </div>
             </div>
-            
           </div>
-        ) : (
-           meeting.status === 'completed' && <div className="text-center text-xl">Summary is empty.</div>
-        )}
-      </div>
+
+          {/* Sidebar: Summary and Action Items */}
+          <div className="lg:col-span-1 space-y-8">
+            {/* Summary */}
+            <div className="bg-gray-800 shadow-md rounded-lg p-6">
+              <h2 className="text-2xl font-semibold text-white mb-4">
+                Summary
+              </h2>
+              <p className="text-gray-300">{meeting.summary?.summary}</p>
+            </div>
+            
+            {/* Sentiment */}
+            <div className="bg-gray-800 shadow-md rounded-lg p-6">
+              <h2 className="text-2xl font-semibold text-white mb-4">
+                Overall Sentiment
+              </h2>
+              <p className="text-3xl font-bold text-cyan-400">
+                {meeting.summary?.sentiment}
+              </p>
+            </div>
+
+            {/* Action Items */}
+            <div className="bg-gray-800 shadow-md rounded-lg p-6">
+              <h2 className="text-2xl font-semibold text-white mb-4">
+                Action Items
+              </h2>
+              <ul className="list-disc list-inside space-y-2 text-gray-300">
+                {meeting.summary?.actionItems.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          
+        </div>
+      </main>
     </div>
   );
 }
+
 

@@ -1,66 +1,119 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/app/lib/firebase';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { createClient } from '@deepgram/sdk';
+import { addDoc, collection, doc, updateDoc } from 'firebase/firestore';
 
-// This is a conceptual example.
-// You MUST secure your API routes in a real app.
+// This is the URL that Recall.ai will call with transcript data
+const WEBHOOK_URL = `${process.env.NEXT_PUBLIC_APP_URL}/api/webhook/recall`;
+const RECALL_API_URL = 'https://us-west-2.recall.ai/api/v1/bot';
+const RECALL_API_KEY = process.env.RECALL_API_KEY;
+
+if (!WEBHOOK_URL || !RECALL_API_KEY) {
+  throw new Error("Environment variables RECALL_API_KEY or NEXT_PUBLIC_APP_URL are not set.");
+}
 
 export async function POST(request: Request) {
+  let meetingId: string | null = null;
   try {
-    const { url } = await request.json();
-    if (!url) {
+    const body = await request.json();
+    const { meetingUrl, botName } = body;
+
+    if (!meetingUrl) {
+      console.error('Validation failed: meetingUrl is empty or missing.');
+      return NextResponse.json({ error: 'Meeting URL is required' }, { status: 400 });
+    }
+
+    // 1. Create a new document in Firestore to track this meeting
+    const meetingRef = await addDoc(collection(db, 'meetings'), {
+      meetingUrl: meetingUrl,
+      botName: botName,
+      status: 'JOINING',
+      createdAt: new Date().toISOString(),
+      transcript: [],
+      summary: null,
+    });
+
+    meetingId = meetingRef.id;
+    console.log(`Created Firestore document: ${meetingId}`);
+
+    // 2. Define the webhook URL. Recall will send all data here.
+    const webhookUrl = `${WEBHOOK_URL}?id=${meetingId}`;
+
+    // 3. This is the CORRECT payload, matching your 'curl' command
+    const botPayload = {
+      meeting_url: meetingUrl,
+      bot_name: botName,
+      // This is the correct configuration for transcription
+      recording_config: {
+        transcript: {
+          provider: {
+            recallai_streaming: {
+              mode: "prioritize_low_latency",
+              language_code: "en"
+            }
+          }
+        }
+      },
+      // This is the webhook Recall will send all events to
+      event_webhook_url: webhookUrl,
+    };
+
+    // 4. Make the API call to Recall.ai using 'fetch'
+    const response = await fetch(RECALL_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Token ${RECALL_API_KEY}`,
+      },
+      body: JSON.stringify(botPayload),
+    });
+
+    // 5. Check if the bot was created successfully
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Recall API Error:', errorData);
+      
+      // Update Firestore with the error
+      if (meetingId) {
+        await updateDoc(doc(db, 'meetings', meetingId), {
+          status: 'ERROR',
+          error: errorData.detail || 'Failed to send bot to meeting.'
+        });
+      }
+      
       return NextResponse.json(
-        { message: 'Meeting URL is required' },
-        { status: 400 }
+        { error: errorData.detail || 'Failed to send bot to meeting.' },
+        { status: response.status }
       );
     }
 
-    // 1. Initialize the Bot Service Client
-    const deepgram = createClient(process.env.DEEPGRAM_API_KEY || '');
+    const botData = await response.json();
+    console.log(`Bot created successfully: ${botData.id}`);
 
-    // 2. Create a new meeting document in Firestore
-    // In a real app, you'd get the userId from auth.
-    const meetingId = crypto.randomUUID();
-    const meetingRef = doc(db, 'meetings', meetingId);
-    
-    await setDoc(meetingRef, {
-      id: meetingId,
-      meetingUrl: url,
-      status: 'joining',
-      createdAt: serverTimestamp(),
-      transcript: [], // Full transcript will be saved here
-    });
+    // 6. Update our Firestore doc with the Recall bot ID
+    if (meetingId) {
+      await updateDoc(doc(db, 'meetings', meetingId), {
+        recallBotId: botData.id,
+      });
+    }
 
-    // 3. Define the webhook URL for the bot to send data to
-    // This MUST be a publicly accessible URL (use Vercel deployment URL, not localhost)
-    const webhookUrl = `${process.env.VERCEL_URL || 'http://localhost:3000'}/api/webhook/transcript?meetingId=${meetingId}`;
-
-    // 4. Tell the Bot Service to join the meeting
-    // This API call will vary GREATLY between services (Deepgram, AssemblyAI, Recall)
-    // This is a simplified example for Deepgram's streaming API
-    
-    // NOTE: The actual implementation of joining a URL is complex.
-    // Services like Recall.ai (which uses Deepgram/Assembly) simplify this.
-    // A more realistic Deepgram call would be to connect to a stream.
-    // For this example, we'll *simulate* success.
-    // In a real app, you'd use their SDK to start a bot.
-    // e.g., await recall.bots.create({ meeting_url: url, ... })
-    
-    console.log(`Bot instructed to join: ${url}`);
-    console.log(`Webhook configured to: ${webhookUrl}`);
-
-    // Simulate updating the status after "joining"
-    await setDoc(meetingRef, { status: 'in-progress' }, { merge: true });
-
-    // 5. Return the new meeting ID to the client
-    return NextResponse.json({ meetingId: meetingId }, { status: 200 });
+    // 7. Send the new meeting's ID back to the frontend
+    return NextResponse.json({ id: meetingId }, { status: 200 });
 
   } catch (error: any) {
-    console.error('Failed to join meeting:', error);
+    console.error('Error in /api/join-meeting:', error);
+    
+    // If an error happens before meetingId is set, we can't update Firestore
+    if (meetingId) {
+      await updateDoc(doc(db, 'meetings', meetingId), {
+        status: 'ERROR',
+        error: error.message || 'An unexpected error occurred'
+      });
+    }
+    
     return NextResponse.json(
-      { message: 'Internal Server Error', error: error.message },
+      { error: error.message || 'An unexpected error occurred' },
       { status: 500 }
     );
   }
 }
+
