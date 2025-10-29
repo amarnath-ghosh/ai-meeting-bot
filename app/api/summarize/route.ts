@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/app/lib/firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { generativeModel } from '@/app/lib/gemini';
+import { geminiModel } from '@/app/lib/gemini';
 
 export async function POST(request: Request) {
   try {
@@ -65,7 +65,7 @@ export async function POST(request: Request) {
     `;
 
     // 3. Call the Gemini API
-    const result = await generativeModel.generateContent({
+  const result = await geminiModel.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
         responseMimeType: 'application/json',

@@ -97,10 +97,12 @@ export default function MeetingPage() {
 
   // Effect to listen for real-time data from Firestore
   useEffect(() => {
+    console.log('🔄 Effect running with meetingId:', meetingId);
     // Don't run until we have the ID and auth is ready
     if (!meetingId) return;
 
     const docRef = doc(db, 'meetings', meetingId);
+    console.log('📝 Setting up Firestore listener for meeting:', meetingId);
 
     // onSnapshot creates a real-time listener
     const unsubscribe = onSnapshot(
@@ -108,15 +110,20 @@ export default function MeetingPage() {
       (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data() as MeetingData;
+          console.log('📥 Received meeting data:', {
+            status: data.status,
+            hasTranscript: data.transcript?.length > 0,
+            hasSummary: !!data.summary
+          });
+          
+          // Always update meeting data first
           setMeeting(data);
-
-          // If the status is 'COMPLETED' or 'ERROR', we can stop the loading spinner
-          if (data.status === 'COMPLETED' || data.status === 'ERROR') {
-            setLoading(false);
-          }
+          
+          // Set loading to false once we have the initial data
+          setLoading(false);
         } else {
           // Document doesn't exist, show an error or redirect
-          console.error('No such document!');
+          console.error('❌ No such document!');
           setLoading(false);
           setMeeting(null);
         }
@@ -131,8 +138,42 @@ export default function MeetingPage() {
     return () => unsubscribe();
   }, [meetingId]); // Re-run this effect if the meetingId changes
 
-  if (loading || !meeting) {
-    return <LoadingSpinner status={meeting?.status || 'Loading...'} />;
+  // Debug logs for current state
+  console.log('🔍 Current state:', {
+    loading,
+    meetingStatus: meeting?.status,
+    hasMeetingData: !!meeting
+  });
+
+  // Show initial loading state before any data is loaded
+  if (!meeting) {
+    console.log('⌛ Showing initial loading spinner');
+    return <LoadingSpinner status="Loading..." />;
+  }
+
+  // Show appropriate UI based on meeting status
+  switch (meeting.status) {
+    case 'JOINING':
+      console.log('🤖 Bot is joining the meeting');
+      return <LoadingSpinner status={meeting.status} />;
+      
+    case 'TRANSCRIBING':
+      console.log('📝 Bot is transcribing the meeting');
+      break;
+      
+    case 'ERROR':
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+          <h1 className="text-3xl font-bold text-red-500">Meeting Error</h1>
+          <p className="mt-4 text-xl text-gray-300">{meeting.error}</p>
+          <button
+            onClick={() => router.push('/')}
+            className="mt-6 px-4 py-2 font-semibold text-white bg-cyan-600 rounded-md hover:bg-cyan-700"
+          >
+            Go Home
+          </button>
+        </div>
+      );
   }
 
   if (meeting.status === 'ERROR') {

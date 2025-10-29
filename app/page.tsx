@@ -41,6 +41,9 @@ export default function HomePage() {
 
     } catch (err: any) {
       setError(err.message);
+      
+    }
+    finally{
       setIsLoading(false);
     }
   };
